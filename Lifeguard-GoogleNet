@@ -1,0 +1,160 @@
+import tensorflow as tf
+from tensorflow.keras.applications import InceptionV3
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout, BatchNormalization
+from tensorflow.keras.models import Model
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
+import cv2
+import numpy as np
+from sklearn.metrics import classification_report, confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Load the model 
+base_model = InceptionV3(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
+
+# Freeze the base model layers 
+base_model.trainable = False
+
+# Add custom layers to the pre-trained base model
+x = base_model.output
+x = GlobalAveragePooling2D()(x)  
+x = BatchNormalization()(x)  
+x = Dense(1024, activation='relu')(x)  
+x = Dropout(0.5)(x)  
+x = Dense(512, activation='relu')(x) 
+x = Dropout(0.3)(x)  
+predictions = Dense(num_classes, activation='softmax')(x)  
+
+model = Model(inputs=base_model.input, outputs=predictions)
+
+# Data augmentation
+train_datagen = ImageDataGenerator(
+    rescale=1.0 / 255,
+    rotation_range=40, 
+    width_shift_range=0.3, 
+    height_shift_range=0.3, 
+    shear_range=0.3,  
+    zoom_range=0.3,  
+    horizontal_flip=True,  
+    fill_mode='nearest'  
+)
+
+# Normalization 
+val_datagen = ImageDataGenerator(rescale=1.0 / 255)
+
+# Load training dataset
+train_generator = train_datagen.flow_from_directory(
+    'C:\\Users\\ruyaa\\OneDrive\\Desktop\\DATASET\\train',
+    target_size=(224, 224),  
+    batch_size=32,
+    class_mode='categorical'  
+)
+
+# Load validation dataset
+val_generator = val_datagen.flow_from_directory(
+    'C:\\Users\\ruyaa\\OneDrive\\Desktop\\DATASET\\test',
+    target_size=(224, 224),  
+    batch_size=32,
+    class_mode='categorical'
+)
+
+# Num of classes
+num_classes = len(train_generator.class_indices)
+
+# Define callbacks 
+checkpoint = ModelCheckpoint('best_model.h5', monitor='val_accuracy', save_best_only=True, mode='max')
+early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=3, min_lr=1e-6)
+
+# Compile the model
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+
+# Training
+history = model.fit(
+    train_generator,
+    epochs=60, 
+    validation_data=val_generator,
+    steps_per_epoch=train_generator.samples // train_generator.batch_size,
+    validation_steps=val_generator.samples // val_generator.batch_size,
+    callbacks=[checkpoint, early_stopping, reduce_lr]
+)
+
+# Unfreeze some layers of the base model 
+base_model.trainable = True
+for layer in base_model.layers[:100]: 
+    layer.trainable = False
+
+# Recompile the model with a lower learning rate for fine-tuning
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001),
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+
+# Fine-tune the model with partially unfrozen layers
+history_finetune = model.fit(
+    train_generator,
+    epochs=10,  # Additional epochs for fine-tuning
+    validation_data=val_generator,
+    steps_per_epoch=train_generator.samples // train_generator.batch_size,
+    validation_steps=val_generator.samples // val_generator.batch_size
+)
+
+# Confusion Matrix
+def evaluate_model():
+    val_steps = len(val_generator)
+    predictions = model.predict(val_generator, steps=val_steps)
+    y_true = val_generator.classes
+    y_pred = np.argmax(predictions, axis=1)
+    report = classification_report(y_true, y_pred, target_names=val_generator.class_indices.keys())
+    print("Classification Report:\n", report)
+    
+    # Confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=val_generator.class_indices.keys(), yticklabels=val_generator.class_indices.keys())
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.title("Confusion Matrix")
+    plt.show()
+
+# Evaluate the model after fine-tuning
+evaluate_model()
+
+# Start the webcam 
+cap = cv2.VideoCapture(1) 
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        print("Failed to capture webcam frame. Exiting...")
+        break
+
+    # Preprocess the webcam frame for prediction
+    img = cv2.resize(frame, (224, 224))
+    img = np.expand_dims(img, axis=0)
+    img = img / 255.0  
+
+    # Perform prediction 
+    predictions = model.predict(img)
+    predicted_class = np.argmax(predictions[0])
+    class_label = list(train_generator.class_indices.keys())[predicted_class]  
+
+    # Display classification result on the frame
+    cv2.putText(frame, f"Class: {class_label}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    cv2.imshow('Real-Time Object Detection', frame)
+
+    # Exit loop when 'r' key is pressed
+    if cv2.waitKey(1) & 0xFF == ord('r'):
+        break
+
+# Release webcam resources and close windows
+cap.release()
+cv2.destroyAllWindows()
+
+    #Exit when the 'r' key is pressed
+    if cv2.waitKey(1) & 0xFF == ord('r'):
+        break
+cap.release()
+cv2.destroyAllWindows()
